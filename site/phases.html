@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Phases — app19 plan</title>
+<meta name="description" content="app19 plan: a small app18-only LLM that lives entirely in one spare 4 GB FirePro W7000, never spills into system RAM, and improves nightly from app18 job logs with Blender as the reference.">
+<meta name="robots" content="index,follow">
+<style>
+:root{color-scheme:light dark;--bg:#0e1013;--fg:#e7e9ec;--mut:#9aa3ad;--acc:#7cc4ff;--line:#262b31;--code:#161a1f}
+@media (prefers-color-scheme:light){:root{--bg:#fbfbfa;--fg:#16191d;--mut:#5a636d;--acc:#0a5cad;--line:#e2e4e7;--code:#f1f2f4}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header,main,footer{max-width:860px;margin:0 auto;padding:0 20px}
+header{padding-top:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:14px}
+header a{color:var(--mut);text-decoration:none;font-size:14px;margin-left:14px}header a:hover{color:var(--acc)}
+.brand{font-weight:700;letter-spacing:.02em;color:var(--fg)!important;margin:0!important;font-size:15px!important}
+main{padding-top:8px;padding-bottom:40px}
+h1{font-size:2rem;line-height:1.2;margin:28px 0 12px}h2{font-size:1.35rem;margin:36px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;margin:24px 0 8px}a{color:var(--acc)}
+code{background:var(--code);padding:.1em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow:auto;border:1px solid var(--line)}pre code{background:none;padding:0;font-size:.85em;line-height:1.45}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:.92em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--code)}
+blockquote{margin:0;padding-left:14px;border-left:3px solid var(--line);color:var(--mut)}
+footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-top:14px;padding-bottom:40px}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/vram-budget">VRAM</a><a href="/learning-loop">Learning</a><a href="/phases">Phases</a><a href="/app9-builder">app9</a></nav></header>
+<main>
+<h1 id="phases">Phases</h1>
+<h2 id="phase-1-inference-vram-enforcement">Phase 1: inference + VRAM enforcement</h2>
+<p><strong>Goal:</strong> the 1.5B model serves app18-only requests from the spare W7000, and it provably never touches system RAM.</p>
+<ul>
+<li><input disabled="" type="checkbox"> Pin llama.cpp <strong>b8393</strong> (Windows Vulkan x64 build). Record its hash.</li>
+<li><input disabled="" type="checkbox"> Card pinning: map slot → LUID → Vulkan index at each boot. <code>GGML_VK_VISIBLE_DEVICES</code> = spare card only.</li>
+<li><input disabled="" type="checkbox"> Preflight: budget math against the 3,200 MiB ceiling, a load-log check (no CPU model buffer), a ±5% check against the estimate, and the coherence prompt.</li>
+<li><input disabled="" type="checkbox"> Launcher with a Job Object (2,304 MiB commit cap, kill-on-close).</li>
+<li><input disabled="" type="checkbox"> Watchdog on the Windows GPU counters (shared and dedicated usage, Blender&#39;s card, working set). Kill and restart on a trip; stay stopped after 2 trips in an hour.</li>
+<li><input disabled="" type="checkbox"> Tool proxy: allowlist of app18 endpoints, attaches the per-session token that Grok Bot mints, and gives the model no credentials.</li>
+<li><input disabled="" type="checkbox"> System prompt + app18 tool schema. Prompt memory slot (empty for now).</li>
+</ul>
+<p><strong>Done when:</strong></p>
+<ul>
+<li>A 24-hour soak passes with zero watchdog trips.</li>
+<li>Windows dedicated usage stays within 5% of 1,461 MiB, and shared usage stays at baseline.</li>
+<li>Blender renders on GPU B at the same time with no slowdown from the model.</li>
+<li>20 scripted app18 jobs pass end to end.</li>
+</ul>
+<h2 id="phase-2-logging">Phase 2: logging</h2>
+<p><strong>Goal:</strong> every app18 job becomes a clean training record on the Linux storage box, and nowhere else.</p>
+<ul>
+<li><input disabled="" type="checkbox"> The tool proxy writes job records using the schema in <a href="/learning-loop">learning-loop.md</a>.</li>
+<li><input disabled="" type="checkbox"> Scrubber: tokens, IPs, hostnames, usernames and paths are removed before a record leaves the PC. Unit tests cover each one.</li>
+<li><input disabled="" type="checkbox"> Append-only transfer to the storage box over an authenticated private link. A local spool holds records until receipt.</li>
+<li><input disabled="" type="checkbox"> Validator auto-labels each job <code>pass</code> or <code>fail</code>, and Marco can add his own label.</li>
+<li><input disabled="" type="checkbox"> Prompt memory: the top-k verified examples go into the context (it lives in the KV cache, on the card).</li>
+<li><input disabled="" type="checkbox"> Freeze the held-out eval set (~150 tasks) and run the gold jobs through Blender to get the reference outputs.</li>
+</ul>
+<p><strong>Done when:</strong> 7 days of jobs are on the storage box, the scrubber tests pass, and the eval set and Blender references are frozen.</p>
+<h2 id="phase-3-nightly-adapter-eval-gate">Phase 3: nightly adapter + eval gate</h2>
+<p><strong>Goal:</strong> a nightly LoRA that only replaces the current one when it beats it on Blender-referenced app18 tasks, with instant rollback.</p>
+<ul>
+<li><input disabled="" type="checkbox"> 2-hour spike: the qvac-fabric LoRA trainer on the spare W7000. Record whether its output is clean and its peak usage. Expected outcome: blocked by the driver.</li>
+<li><input disabled="" type="checkbox"> Plan of record: LoRA training on the storage box&#39;s CPU from the current adapter, then convert to GGUF and hash.</li>
+<li><input disabled="" type="checkbox"> Eval harness: candidate vs current on the frozen set, with Blender executing the jobs. Scorecard as in <a href="/learning-loop#5-eval-gate-blender-is-the-reference">learning-loop.md</a>.</li>
+<li><input disabled="" type="checkbox"> Gate: +1.0 point, no metric down more than 2, zero forbidden calls, coherence passes.</li>
+<li><input disabled="" type="checkbox"> Hot-swap through <code>/lora-adapters</code> scales, with current and previous both loaded. One-call rollback.</li>
+<li><input disabled="" type="checkbox"> Morning scorecard in app9.</li>
+</ul>
+<p><strong>Done when:</strong> 14 nights run unattended, at least one adapter promotes on merit, and a forced rollback takes under 1 second.</p>
+<h2 id="iteration-rule-this-repo">Iteration rule (this repo)</h2>
+<p>One push per iteration, with an annotated tag counting up (<code>good-0</code>, <code>good+1</code>, …). The tag message states the goal, what changed, how it was verified, and the base commit. Existing tags are never moved.</p>
+
+</main>
+<footer>NextAura · app19 plan · static page, no tracking, no backend.</footer>
+</body>
+</html>

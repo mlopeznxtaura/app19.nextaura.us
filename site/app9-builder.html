@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>app9 Builder GUI — app19 plan</title>
-<meta name="description" content="app19 plan: a local character model on a spare GPU card, scored nightly against Blender reference renders.">
+<title>app9 building GUI — app19 plan</title>
+<meta name="description" content="app19 plan: a small app18-only LLM that lives entirely in one spare 4 GB FirePro W7000, never spills into system RAM, and improves nightly from app18 job logs with Blender as the reference.">
 <meta name="robots" content="index,follow">
 <style>
 :root{color-scheme:light dark;--bg:#0e1013;--fg:#e7e9ec;--mut:#9aa3ad;--acc:#7cc4ff;--line:#262b31;--code:#161a1f}
@@ -27,11 +27,11 @@ footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-
 </style>
 </head>
 <body>
-<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/app9-builder">app9 Builder</a></nav></header>
+<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/vram-budget">VRAM</a><a href="/learning-loop">Learning</a><a href="/phases">Phases</a><a href="/app9-builder">app9</a></nav></header>
 <main>
-<h1 id="app9nextauraus-builder-gui-for-app19-plan">app9.nextaura.us — Builder GUI for app19 (plan)</h1>
-<p><strong>Status:</strong> plan only. Nothing here is deployed. The current app9 stays exactly as it is until Marco approves the cutover (see <a href="#rollout">Rollout</a>).</p>
-<p>app9 becomes the <strong>control panel</strong> for the app19 local character model: the person or agent at the panel sees the VRAM budget, starts and stops the model on the spare card, reads logs, triggers and compares nightly adapter evals against the Blender reference, and rolls back. <strong>Marco and agents use the same API.</strong> The web UI is just one client of it.</p>
+<h1 id="app9nextauraus-the-building-gui-for-app19-plan">app9.nextaura.us: the building GUI for app19 (plan)</h1>
+<p><strong>Status:</strong> plan only. Nothing is deployed. Today app9 serves a static &quot;NextAura Multimodal Fine-tune&quot; mirror, and it stays that way until Marco approves the cutover (see <a href="#rollout">Rollout</a>).</p>
+<p>app9 becomes the <strong>control panel</strong> for the app18-only model on the spare W7000. <strong>Marco and agents use the same API.</strong> The web page is just one client of it.</p>
 <h2 id="panels">Panels</h2>
 <table>
 <thead>
@@ -42,55 +42,55 @@ footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-
 </tr>
 </thead>
 <tbody><tr>
-<td><strong>VRAM budget</strong></td>
-<td>Spare card total, estimated vs measured usage, the green/amber/red band, and the current job. The main card shows only as &quot;not managed&quot;.</td>
-<td>None. This panel is read-only.</td>
+<td><strong>VRAM</strong></td>
+<td>Spare card: Windows dedicated vs shared usage (live), budget vs the 3,200 MiB ceiling, the latest preflight result, watchdog trips. Blender&#39;s card: the model process&#39;s usage on it (must stay ~0).</td>
+<td>Read-only</td>
 </tr>
 <tr>
 <td><strong>Model</strong></td>
-<td>State (<code>stopped</code>, <code>starting</code>, <code>serving</code>, <code>training</code>, <code>stopping</code>, <code>error</code>), current adapter hash, uptime, and tokens/s</td>
-<td>Start, stop, restart</td>
+<td>State, llama.cpp build (must be the pinned b8393), model + context, active adapter, tokens/s, uptime</td>
+<td>Start, stop, restart (each start runs preflight)</td>
 </tr>
 <tr>
 <td><strong>Logs</strong></td>
-<td>Live tail of runner, trainer, and eval logs, filterable by job and level</td>
-<td>Download a log bundle for a job</td>
+<td>Live tail of the launcher, preflight, server, watchdog, tool proxy and nightly jobs. Filter by job and level.</td>
+<td>Download a log bundle</td>
+</tr>
+<tr>
+<td><strong>Jobs</strong></td>
+<td>Recent app18 jobs driven by the model, each with its outcome and its Blender result</td>
+<td>Label pass/fail (feeds the learning loop)</td>
 </tr>
 <tr>
 <td><strong>Evals</strong></td>
-<td>Nightly scorecards over time. Per-metric trend lines for schema-valid, field accuracy, silhouette IoU, palette ΔE, and SSIM.</td>
-<td>Trigger an eval on any adapter</td>
+<td>Nightly scorecards: success, match to the Blender reference, plan correctness, efficiency, and the forbidden-call gate</td>
+<td>Trigger an eval of any adapter</td>
 </tr>
 <tr>
 <td><strong>Compare</strong></td>
-<td>Two adapters side by side, or one adapter vs the Blender reference. Per-brief render grid, worst delta first.</td>
-<td>Promote (if the gate passes)</td>
+<td>Two adapters, or one adapter vs the Blender reference, per task: renders side by side, stats diff, worst first</td>
+<td>Promote (only if the gate passed)</td>
 </tr>
 <tr>
 <td><strong>Adapters</strong></td>
-<td>The last 10 promoted adapters plus candidates: hash, created, data manifest, score, and who promoted it</td>
-<td>Roll back to any listed adapter</td>
+<td>Current, previous, the last 10 promoted, and candidates: hash, size on the card, dataset manifest, score, who promoted it</td>
+<td>Roll back (instant scale swap)</td>
 </tr>
 <tr>
 <td><strong>Audit</strong></td>
-<td>Every state change: actor (Marco or agent session), action, args, and result</td>
+<td>Every state change: actor (Marco or agent session), action, arguments, result</td>
 <td>—</td>
 </tr>
 </tbody></table>
-<h2 id="state-machine-spare-card-runner">State machine (spare card runner)</h2>
-<pre><code>stopped ──start──► starting ──ok──► serving ──stop──► stopping ──► stopped
-   ▲                   │                │
-   │                 fail             train (scheduled or manual)
-   │                   ▼                ▼
-   └──────reset────── error ◄──fail── training ──done──► serving (current adapter)
+<h2 id="runner-states-spare-card">Runner states (spare card)</h2>
+<pre><code>stopped ──start──► preflight ──pass──► serving ──stop──► stopped
+                      │                   │
+                    fail               watchdog trip ──► stopped (+ alert after 2 trips/hour)
+                      ▼
+                   refused (reason shown: over_budget, wrong_build, card_ambiguous, spill_detected, incoherent)
 </code></pre>
-<ul>
-<li>Only one job runs on the spare card at a time. <code>train</code> stops serving first.</li>
-<li>Every start is checked against the VRAM budget. If the estimate is over, the start is rejected with <code>409 over_budget</code>.</li>
-<li>When the measured peak goes above the red line, the runner checkpoints, moves to <code>stopping</code>, and writes an audit event.</li>
-</ul>
 <h2 id="json-api">JSON API</h2>
-<p>Base: <code>https://app9.nextaura.us/api/v1</code>. JSON in, JSON out. Every request carries <code>Authorization: Bearer &lt;session token&gt;</code>. Every mutating request also carries an <code>Idempotency-Key</code> header.</p>
+<p>Base: <code>https://app9.nextaura.us/api/v1</code>. JSON in and out. Every request carries <code>Authorization: Bearer &lt;session token&gt;</code>. Mutating requests also need an <code>Idempotency-Key</code>.</p>
 <table>
 <thead>
 <tr>
@@ -103,207 +103,216 @@ footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-
 <tbody><tr>
 <td>GET</td>
 <td><code>/status</code></td>
-<td><code>read</code></td>
-<td>Runner state, current adapter, VRAM snapshot, current job</td>
+<td>read</td>
+<td>State, build, model, adapter, VRAM snapshot, last preflight</td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/vram</code></td>
-<td><code>read</code></td>
-<td>Card total, estimated, measured, peak, band, thresholds</td>
+<td>read</td>
+<td>Dedicated/shared usage on the spare card, budget, ceiling, watchdog trips, usage on the Blender card</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/preflight/last</code></td>
+<td>read</td>
+<td>Full preflight report (budget lines, load-log check, coherence result)</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/model/start</code></td>
-<td><code>operate</code></td>
-<td><code>{ &quot;adapter&quot;: &quot;current&quot; | &quot;&lt;hash&gt;&quot;, &quot;mode&quot;: &quot;serve&quot; }</code></td>
+<td>operate</td>
+<td><code>{ &quot;adapter&quot;: &quot;current&quot; }</code>. Runs preflight first. Returns <code>409</code> with the reason if refused.</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/model/stop</code></td>
-<td><code>operate</code></td>
+<td>operate</td>
 <td><code>{ &quot;reason&quot;: &quot;...&quot; }</code></td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/logs</code></td>
-<td><code>read</code></td>
-<td><code>?job=&lt;id&gt;&amp;level=info&amp;since=&lt;cursor&gt;&amp;limit=500</code> returns lines + next cursor</td>
+<td>read</td>
+<td><code>?source=server&amp;level=info&amp;since=&lt;cursor&gt;&amp;limit=500</code></td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/logs/stream</code></td>
-<td><code>read</code></td>
-<td>Server-sent events, same filters</td>
+<td>read</td>
+<td>Server-sent events (live stream), same filters</td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/jobs</code></td>
+<td>read</td>
+<td>Recent app18 jobs with outcomes</td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/jobs/{id}/label</code></td>
+<td>operate</td>
+<td><code>{ &quot;label&quot;: &quot;pass&quot; | &quot;fail&quot;, &quot;note&quot;: &quot;...&quot; }</code></td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/adapters</code></td>
-<td><code>read</code></td>
-<td>Promoted and candidate adapters with scores</td>
+<td>read</td>
+<td>Current, previous, history, candidates</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/evals</code></td>
-<td><code>operate</code></td>
-<td><code>{ &quot;adapter&quot;: &quot;&lt;hash&gt;&quot;, &quot;set&quot;: &quot;frozen&quot; }</code> returns <code>{ &quot;eval_id&quot; }</code></td>
+<td>operate</td>
+<td><code>{ &quot;adapter&quot;: &quot;&lt;hash&gt;&quot; }</code> → <code>{ &quot;eval_id&quot; }</code></td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/evals/{id}</code></td>
-<td><code>read</code></td>
-<td>Status + scorecard once done</td>
+<td>read</td>
+<td>Status + scorecard</td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/evals/compare</code></td>
-<td><code>read</code></td>
-<td><code>?a=&lt;hash&gt;&amp;b=&lt;hash or &quot;reference&quot;&gt;</code> returns per-metric deltas + per-brief render pairs</td>
+<td>read</td>
+<td><code>?a=&lt;hash&gt;&amp;b=&lt;hash or &quot;reference&quot;&gt;</code></td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/adapters/promote</code></td>
-<td><code>admin</code></td>
-<td><code>{ &quot;adapter&quot;: &quot;&lt;hash&gt;&quot;, &quot;eval_id&quot;: &quot;&lt;id&gt;&quot; }</code>. Refused unless that eval passed the gate</td>
+<td>admin</td>
+<td><code>{ &quot;adapter&quot;: &quot;&lt;hash&gt;&quot;, &quot;eval_id&quot;: &quot;&lt;id&gt;&quot; }</code>. Refused unless that eval passed the gate.</td>
 </tr>
 <tr>
 <td>POST</td>
 <td><code>/adapters/rollback</code></td>
-<td><code>admin</code></td>
-<td><code>{ &quot;to&quot;: &quot;&lt;hash&gt;&quot;, &quot;reason&quot;: &quot;...&quot; }</code></td>
+<td>admin</td>
+<td><code>{ &quot;to&quot;: &quot;previous&quot; | &quot;&lt;hash&gt;&quot;, &quot;reason&quot;: &quot;...&quot; }</code></td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/audit</code></td>
-<td><code>read</code></td>
+<td>read</td>
 <td><code>?since=&lt;cursor&gt;</code></td>
 </tr>
 <tr>
 <td>GET</td>
 <td><code>/tools</code></td>
 <td>none</td>
-<td>The MCP-style tool list below, as JSON</td>
+<td>The tool list below, as JSON</td>
 </tr>
 </tbody></table>
-<p>Errors use one shape: <code>{ &quot;ok&quot;: false, &quot;error&quot;: &quot;&lt;code&gt;&quot;, &quot;detail&quot;: &quot;...&quot; }</code>. Codes: <code>unauthorized</code>, <code>forbidden_scope</code>, <code>token_expired</code>, <code>over_budget</code>, <code>busy</code>, <code>not_found</code>, <code>gate_failed</code>, <code>invalid_args</code>.</p>
-<h3 id="example">Example</h3>
-<pre><code class="language-http">POST /api/v1/evals
-Authorization: Bearer &lt;session token&gt;
-Idempotency-Key: 7f1c...
-Content-Type: application/json
-
-{ &quot;adapter&quot;: &quot;a1b2c3d4&quot;, &quot;set&quot;: &quot;frozen&quot; }
-</code></pre>
-<pre><code class="language-json">{ &quot;ok&quot;: true, &quot;eval_id&quot;: &quot;ev_20261009_0200&quot;, &quot;state&quot;: &quot;queued&quot; }
-</code></pre>
-<h2 id="agent-tool-list-mcp-style">Agent tool list (MCP-style)</h2>
-<p>The same operations as tools, so any agent can drive app9 without the browser. Served at <code>GET /api/v1/tools</code> and over an MCP endpoint behind the same auth.</p>
+<p>Errors: <code>{ &quot;ok&quot;: false, &quot;error&quot;: &quot;&lt;code&gt;&quot;, &quot;detail&quot;: &quot;...&quot; }</code>. The codes are <code>unauthorized</code>, <code>token_expired</code>, <code>forbidden_scope</code>, <code>over_budget</code>, <code>wrong_build</code>, <code>card_ambiguous</code>, <code>spill_detected</code>, <code>incoherent</code>, <code>busy</code>, <code>not_found</code>, <code>gate_failed</code> and <code>invalid_args</code>.</p>
+<h2 id="agent-tools-mcp-style">Agent tools (MCP-style)</h2>
+<p>These are the same operations, served at <code>GET /api/v1/tools</code> and over an MCP endpoint behind the same auth.</p>
 <table>
 <thead>
 <tr>
 <th>Tool</th>
 <th>Args</th>
-<th>Returns</th>
 <th>Scope</th>
 </tr>
 </thead>
 <tbody><tr>
 <td><code>get_status</code></td>
 <td>—</td>
-<td>runner state, adapter, VRAM snapshot</td>
 <td>read</td>
 </tr>
 <tr>
-<td><code>get_vram_budget</code></td>
+<td><code>get_vram</code></td>
 <td>—</td>
-<td>total, estimated, measured, peak, band</td>
+<td>read</td>
+</tr>
+<tr>
+<td><code>get_preflight</code></td>
+<td>—</td>
 <td>read</td>
 </tr>
 <tr>
 <td><code>start_model</code></td>
-<td><code>adapter?</code>, <code>mode?</code></td>
-<td>new state</td>
+<td><code>adapter?</code></td>
 <td>operate</td>
 </tr>
 <tr>
 <td><code>stop_model</code></td>
 <td><code>reason</code></td>
-<td>new state</td>
 <td>operate</td>
 </tr>
 <tr>
 <td><code>tail_logs</code></td>
-<td><code>job?</code>, <code>level?</code>, <code>since?</code>, <code>limit?</code></td>
-<td>lines, cursor</td>
+<td><code>source?</code>, <code>level?</code>, <code>since?</code>, <code>limit?</code></td>
 <td>read</td>
+</tr>
+<tr>
+<td><code>list_jobs</code></td>
+<td><code>since?</code>, <code>outcome?</code></td>
+<td>read</td>
+</tr>
+<tr>
+<td><code>label_job</code></td>
+<td><code>id</code>, <code>label</code>, <code>note?</code></td>
+<td>operate</td>
 </tr>
 <tr>
 <td><code>list_adapters</code></td>
 <td>—</td>
-<td>adapters with scores</td>
 <td>read</td>
 </tr>
 <tr>
 <td><code>run_eval</code></td>
-<td><code>adapter</code>, <code>set?</code></td>
-<td>eval_id</td>
+<td><code>adapter</code></td>
 <td>operate</td>
 </tr>
 <tr>
 <td><code>get_eval</code></td>
 <td><code>eval_id</code></td>
-<td>status, scorecard</td>
 <td>read</td>
 </tr>
 <tr>
 <td><code>compare_evals</code></td>
 <td><code>a</code>, <code>b</code> (hash or <code>reference</code>)</td>
-<td>deltas, render pairs</td>
 <td>read</td>
 </tr>
 <tr>
 <td><code>promote_adapter</code></td>
 <td><code>adapter</code>, <code>eval_id</code></td>
-<td>new current</td>
 <td>admin</td>
 </tr>
 <tr>
 <td><code>rollback_adapter</code></td>
 <td><code>to</code>, <code>reason</code></td>
-<td>new current</td>
 <td>admin</td>
 </tr>
 <tr>
 <td><code>get_audit</code></td>
 <td><code>since?</code></td>
-<td>events</td>
 <td>read</td>
 </tr>
 </tbody></table>
-<p>Agents get <code>read</code> + <code>operate</code> by default. <code>admin</code> (promote and rollback) is granted per session only when Marco asks for it.</p>
-<h2 id="auth">Auth</h2>
+<p>Agents get <code>read</code> + <code>operate</code> by default. <code>admin</code> (promote and roll back) is granted per session, only when Marco asks.</p>
+<h2 id="auth-per-session-tokens">Auth: per-session tokens</h2>
 <ul>
-<li><strong>Grok Bot mints a short-lived token for each session.</strong> Nothing is hardcoded in the repo, the site, the worker, or the agents&#39; prompts.</li>
-<li>The token is a signed claim set: <code>sub</code> (Marco or agent session id), <code>scope</code> (<code>read</code> / <code>operate</code> / <code>admin</code>), <code>exp</code> (default 1 hour, max 8 hours), <code>jti</code> (unique id), and <code>aud</code> = <code>app9</code>.</li>
-<li>The signing key lives only in the gate&#39;s secret store. It&#39;s never in git, never in the static assets, and never in logs.</li>
-<li>The gate verifies signature, expiry, audience, and scope on every call. Revoking a <code>jti</code> takes effect on the next request.</li>
-<li>The browser UI gets its token from the same minting flow. It keeps the token in memory only, with no long-lived cookies or localStorage.</li>
-<li>Every call is written to the audit log with <code>sub</code>, <code>jti</code>, the action, and the result. Token values themselves are never logged.</li>
-<li>The gate is the only public surface. The spare-card runner and the Blender node have no public address.</li>
+<li><strong>Grok Bot mints a short-lived token for each session.</strong> No token is ever hardcoded in the repo, the site, the worker, an agent prompt, or the model.</li>
+<li>A token is a signed claim set: <code>sub</code> (Marco or an agent session), <code>scope</code> (<code>read</code> / <code>operate</code> / <code>admin</code>), <code>aud</code> (<code>app9</code> or <code>app18</code>), <code>exp</code> (1 hour by default, 8 hours max) and a unique <code>jti</code>.</li>
+<li>The signing key lives only in the gate&#39;s secret store. It is never in git, static assets or logs. Logs record the <code>jti</code>, never the token value.</li>
+<li><strong>The model itself</strong> gets an <code>app18</code>-audience token through the local tool proxy. The proxy attaches it to allowlisted app18 calls. The model never sees it.</li>
+<li>Revoking a <code>jti</code> takes effect on the next request. The browser UI keeps its token in memory only, with no long-lived cookies.</li>
+<li>No extra Cloudflare services. The gate is the only public surface. The PC, the Blender node and the storage box have no new public exposure.</li>
 </ul>
 <h2 id="rollout">Rollout</h2>
 <ol>
-<li><strong>Now:</strong> plan only (this doc). The current app9 is unchanged.</li>
-<li>Build the gate + runner API against a mock runner. All panels work with fake data.</li>
-<li>Hook up the real runner on the spare card, read-only first (<code>status</code>, <code>vram</code>, <code>logs</code>).</li>
-<li>Turn on <code>operate</code> (start, stop, eval), then <code>admin</code> (promote, rollback).</li>
-<li><strong>Cutover:</strong> replace the current app9 page only after Marco approves. Keep the old static mirror&#39;s files in the repo history so it can be restored.</li>
+<li><strong>Now:</strong> plan only (this doc). app9 is unchanged.</li>
+<li>Build the API against a mock runner, so every panel works with fake data.</li>
+<li>Connect the real runner read-only first: <code>status</code>, <code>vram</code>, <code>logs</code>, <code>preflight</code>.</li>
+<li>Turn on <code>operate</code> (start, stop, eval, label), then <code>admin</code> (promote, rollback).</li>
+<li><strong>Cutover:</strong> replace today&#39;s app9 page only after Marco approves. Keep the old mirror in git so it can be restored.</li>
 </ol>
 <h2 id="out-of-scope">Out of scope</h2>
 <ul>
-<li>Any Cloudflare service beyond what the gate needs. Each one gets its own decision when we get to it.</li>
-<li>Exposing the main GPU card, the GPU box, or the Blender node to the internet.</li>
-<li>Marketing app9. It&#39;s an internal builder tool.</li>
+<li>Any Cloudflare service beyond what the gate needs.</li>
+<li>Exposing the PC, the GPUs, the Blender node or the storage box to the internet.</li>
+<li>Marketing app9. It is an internal building tool.</li>
 </ul>
 
 </main>

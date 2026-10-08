@@ -1,151 +1,91 @@
-# app19 — Local Character Model on the Spare Card
+# app19: an app18-only model that lives on one spare 4 GB card
 
-**Status:** plan. Nothing in this repo trains or serves a model yet. The only thing live is this page at <https://app19.nextaura.us>.
+**Status:** plan. The only thing live today is this page at <https://app19.nextaura.us>. Nothing in this repo serves or trains a model yet.
 
 ## What
 
-Run a small open model with a LoRA adapter on the **spare GPU card**. You give it a plain-language character brief ("heavy-set cop, mustache, aviators, navy slacks"). It returns **validated `lowpoly_character` params**, the same JSON the Blender low-poly builder already accepts. Blender renders those params. That render is the **reference**. The model gets no other source of truth.
+One Windows PC runs two jobs:
 
-The nightly loop:
+- **app18.nextaura.us**: the public site in front of a **Blender 5.2.2** modeling and render node.
+- **app19**: a small LLM that is an expert in exactly one thing, driving app18. It turns a request into the right app18 jobs, reads the results, and fixes its own mistakes. Every night it gets better from app18's own job logs.
 
-1. Train or refresh the adapter on the spare card.
-2. Run the fixed eval set. Brief → params → Blender render.
-3. Score each render against the Blender reference render for that brief.
-4. Promote the adapter only if it beats the current one. If it doesn't, keep the current one. Rolling back is one action.
+| Part | What it is |
+| --- | --- |
+| CPU | AMD Ryzen 9 7950X (16 cores) |
+| GPU A, the **spare card** | AMD FirePro W7000, 4 GB, GCN 1.0 (Pitcairn). **The model lives here and only here.** |
+| GPU B | AMD FirePro W7000, 4 GB. **Dedicated to Blender.** The model never touches it. |
+| OS | Windows 11 Pro |
+| Blender | 5.2.2. Cycles GPU (HIP) does not support GCN 1.0, so Cycles renders on the CPU and EEVEE/Workbench use GPU B. |
 
-The builder GUI for all of this is **app9.nextaura.us**. See [docs/app9-builder.md](docs/app9-builder.md).
+## The hard rule
 
-## Why
+**The model never spills into system RAM.** Weights, KV cache and compute buffers all stay in the spare card's 4 GB of VRAM. The OS reports **3,452 MiB free** on that card (measured).
 
-- The params schema is closed: enums, ranges, and `#RRGGBB` colours, and unknown keys are rejected. That makes "did the model get it right" a measurable question, not a vibe.
-- Blender already produces a good character from good params (front, 3/4, and side views, plus a rigged GLB). The model only has to learn **brief → params**. It never has to learn geometry.
-- The spare card is otherwise idle. The main card and the main workloads are never touched.
+How the rule is enforced, all detailed in [docs/vram-budget.md](docs/vram-budget.md):
 
-## Architecture
+1. **llama.cpp's Vulkan backend.** It is the only option on this card: there is no CUDA, and ROCm/HIP does not support GCN 1.0.
+2. **Everything on the card.** Full offload (`-ngl 999`), the token embedding forced onto the card (`-ot token_embd.weight=Vulkan0`), no memory-mapped model file, KV cache on the GPU, fixed context and batch sizes, and no automatic resizing.
+3. **Card pinning.** The server only sees the spare card, selected by Vulkan device index plus a LUID check (LUID is Windows' per-boot GPU adapter ID). Blender's card is invisible to it.
+4. **Preflight check.** It adds up the real file sizes, KV cache, compute buffers and driver overhead, and refuses to start if the total is over the **3,200 MiB** ceiling.
+5. **Windows Job Object.** It caps the server process's memory, so a runaway allocation kills the process instead of paging.
+6. **Watchdog.** It reads the Windows GPU counters (dedicated vs shared usage) for the server process every 500 ms and kills and restarts the server on any spill.
 
-```
-brief (text)
-   │
-   ▼
-[spare card] base model + LoRA adapter ──► params JSON
-   │                                          │
-   │                              schema validator (reject = score 0)
-   │                                          │
-   │                                          ▼
-   │                               Blender builder (headless)
-   │                                          │
-   │                         render views + GLB + stats.json
-   │                                          │
-   ▼                                          ▼
-eval harness ◄──────── Blender reference renders (gold params)
-   │
-   ▼
-scorecard ──► promote / hold / roll back   (driven from app9)
-```
+## Chosen model
 
-| Part | Runs where | Notes |
-| --- | --- | --- |
-| Base model + adapter | Spare GPU only | Pinned to that one device. Never falls back to the main card. |
-| Schema validator | CPU | The same rules as the Blender builder. Unknown keys are rejected. |
-| Blender builder | CPU (Cycles CPU) or the existing private Blender node | Reached only through the authenticated gate. Never exposed directly. |
-| Eval harness | CPU | Deterministic seeds and a fixed camera, light, and resolution. |
-| Control plane | app9.nextaura.us | Status, start/stop, logs, evals, and rollback. Session-token auth. |
+**Qwen2.5-Coder-1.5B-Instruct, Q4_K_M**, with context 8192, micro-batch 256 and llama.cpp **b8393** on Vulkan.
 
-## VRAM budget
+| Measured on the spare W7000 (b8393, `--no-mmap`, ctx 8192, ub 256) | MiB |
+| --- | --- |
+| Model buffer, all on the card (GGUF file is 1,117,320,768 B) | 1,059.89 |
+| KV cache, f16 | 224.00 |
+| Compute buffer on the card | 151.38 |
+| llama.cpp total on the card | **1,435.27** |
+| Windows "Dedicated Usage" peak for the process (includes driver overhead) | **1,461** |
+| Room left for a LoRA adapter, a second adapter for instant rollback, and headroom under the 3,200 MiB ceiling | ~1,739 |
 
-The spare card has a **hard budget**. The runner refuses to start when the estimate is over budget, and it stops the job when the measured peak crosses the stop line.
+Generation speed is about **43 tokens/s**. The full table of candidates (0.5B, 1B, 3B), with sources, is in [docs/vram-budget.md](docs/vram-budget.md).
 
-```
-estimate = weights + adapter + optimizer_state + activations(seq_len, batch) + kv_cache + runtime_overhead
-headroom = card_total − estimate          (must stay ≥ 15% of card_total)
-```
+### The driver problem, plainly
 
-| Mode | Base size | Precision | Approx. weights | Training extra (LoRA r=16, seq 1024, batch 4, grad ckpt) | Fits a ~12 GB spare card? |
-| --- | --- | --- | --- | --- | --- |
-| Serve | 0.5B | bf16 | ~1.0 GB | — | Yes, with lots of room |
-| Serve | 1.5B | bf16 | ~3.1 GB | — | Yes |
-| Serve | 3B | 4-bit | ~2.0 GB | — | Yes |
-| Train (QLoRA) | 1.5B | 4-bit base, bf16 adapter | ~1.0 GB | ~3–5 GB | Yes, the default |
-| Train (LoRA) | 3B | bf16 | ~6.2 GB | ~5–7 GB | Tight. Only if headroom stays ≥ 15% |
+The W7000s run AMD's **last** driver for this generation: 27.20.21026.6 from June 2021, with a Vulkan ICD (the driver's Vulkan implementation) reporting **1.2.170**. llama.cpp's Vulkan needs 1.2 plus 16-bit storage buffers. Both cards pass that check: `--list-devices` shows them with `fp16: 0` and `int dot: 0`.
 
-Rules:
+The catch: **llama.cpp builds after b8393 produce corrupted text on this driver.** The tested build b11512 doubled words ("and and", "These These"). Upstream declined a fix ([llama.cpp PR #21787](https://github.com/ggml-org/llama.cpp/pull/21787)) and told users to switch to the Linux open-source driver (Mesa RADV).
 
-- **Default:** 1.5B base, QLoRA training, bf16 serving. Start at 0.5B to prove the loop, then move up.
-- **Serve and train never overlap.** The scheduler stops serving before a training run and restarts it after.
-- **Thresholds:** green below 70% of card total, amber 70–85%, red above 85%. At red, the runner stops the job cleanly and writes a checkpoint.
-- The budget numbers (card total, thresholds, max seq/batch) live in a config file, not in code. app9 shows estimated vs measured usage live.
+b8393 produced clean output in the same test. **So Phase 1 pins b8393.** Fallbacks are listed in [docs/vram-budget.md](docs/vram-budget.md#if-the-driver-path-fails).
 
-## Data
+## The learning loop, in one paragraph
 
-- **Seed set:** a handful of hand-checked character specs (for example a Belizean man, a Trinidadian woman, a police officer, and a street character), each with a written brief.
-- **Expansion:** sample valid params from the schema (body, build, height, hair, top, bottom, shoes, colours, accessories ≤ 5). Write 3–5 briefs per spec in different voices: terse, descriptive, slang. Keep the briefs a human would actually type.
-- **Gold renders:** Blender renders every gold spec once: front, 3/4, and side views at a fixed resolution and sample count. The image hashes are stored with the spec.
-- **Split:** train / val / **frozen eval** (about 200 briefs). The frozen eval set never changes between nights, so the scores stay comparable.
-- No scraped faces and no real people. Every character is synthetic.
+Every app18 job (the request, the model's plan, the API calls, Blender's result, pass/fail) is logged as a training example. Logs are stored **only on a separate Linux storage box**. Updating weights in real time is not possible on this card. A **nightly LoRA adapter** is possible, but only trained **off the card**.
 
-## Training
+The honest verdict on training *on* the 4 GB card without using RAM: **upstream llama.cpp cannot fine-tune the 1.5B or even a 0.5B model inside 4 GB.** Its trainer is full-parameter and FP32 only, which limits it to roughly a 150M-parameter model with AdamW. See [docs/learning-loop.md](docs/learning-loop.md) for the numbers and for the alternatives, each labelled as violating or not violating the rule.
 
-- QLoRA on the spare card. The target is **params JSON only**, with no prose.
-- Constrained decoding against the schema's JSON grammar at inference time, so invalid enums or keys can't be emitted.
-- Nightly: train on whatever new data arrived since the last run, starting from the last *promoted* adapter, with a capped step count and a capped wall clock.
-- Every adapter is saved as an immutable, content-hashed artifact with its config, data manifest, and scorecard.
-
-## Nightly eval vs the Blender reference
-
-For each frozen-eval brief:
-
-| Metric | What it checks | Weight |
-| --- | --- | --- |
-| Schema-valid rate | Params pass the validator | Gate. Must be ≥ 99% |
-| Field accuracy | Exact match on enums, ±0.03 m on height, ΔE ≤ 10 on colours vs gold params | 40% |
-| Silhouette IoU | Mask IoU of front, 3/4, and side renders vs the reference renders | 25% |
-| Palette distance | Mean ΔE of the dominant colours per body region vs the reference | 20% |
-| Perceptual similarity | SSIM on the fixed-camera renders vs the reference | 15% |
-
-**Promotion gate:** the candidate's weighted score must be at least the current adapter's score + 0.5 points, with no metric regressing by more than 2 points, and a schema-valid rate of ≥ 99%. If any check fails, the current adapter stays and the candidate is kept for comparison.
-
-**Compare view:** side-by-side reference and candidate renders per brief, sorted by worst delta first. This lives in app9.
-
-## Rollback
-
-- `current` is a pointer to one adapter hash. Promotion and rollback both just move the pointer.
-- The last 10 promoted adapters are kept. Rollback swaps the pointer and restarts serving on the spare card. The target is under 1 minute.
-- Every pointer move is logged with who did it (Marco or an agent session), when, and why.
+A new adapter replaces the old one **only** if it beats it on a held-out set of app18 tasks scored against Blender's reference output. Rollback is instant: both adapters stay loaded and a single call switches between them.
 
 ## Security
 
-- **No secrets in this repo or on the site.** No tokens, keys, internal addresses, hostnames, usernames, or file paths.
-- Control actions go through app9 with **short-lived per-session tokens** minted by Grok Bot for each session. Nothing is hardcoded and nothing is long-lived. See [docs/app9-builder.md](docs/app9-builder.md#auth).
-- The GPU box and the Blender node are **never** exposed publicly. They're reached only through the authenticated gate.
-- This site is a static Cloudflare Worker with assets only: no backend, no storage, and no other Cloudflare services.
+- The model reaches app18 **only** with short-lived, per-session tokens that Grok Bot mints. There are no hardcoded tokens, nothing long-lived, and nothing in this repo or on this site.
+- The model never holds a credential. A local tool proxy attaches the session token and allows only an approved list of app18 endpoints.
+- No extra Cloudflare services. This site is a static Worker that serves files only. app18 keeps its existing setup.
+- The PC, the Blender node and the storage box have no new public exposure.
 
-## Milestones
+## Plan docs
 
-| # | Milestone | Done when |
-| --- | --- | --- |
-| M0 | Plan public | This page is live at app19.nextaura.us |
-| M1 | Eval harness | Gold renders exist for the seed set, and the scorer runs on CPU against hand-written params |
-| M2 | Baseline | 0.5B base model with constrained decoding and no adapter is scored on the frozen eval |
-| M3 | First adapter | A QLoRA adapter on the spare card beats the baseline through the promotion gate |
-| M4 | app9 builder | Status, start/stop, logs, evals, compare, and rollback all work from app9 for Marco and for agents |
-| M5 | Nightly | Unattended nightly train → eval → promote/hold, with a morning scorecard |
+| Doc | What's in it |
+| --- | --- |
+| [docs/vram-budget.md](docs/vram-budget.md) | Budget table with real GGUF sizes and on-card measurements, server flags, preflight, Job Object, watchdog, card pinning, driver fallbacks |
+| [docs/learning-loop.md](docs/learning-loop.md) | Logging, the storage box, the nightly adapter, the on-card training verdict and alternatives, eval gate, rollback |
+| [docs/phases.md](docs/phases.md) | Phase 1: inference + VRAM enforcement. Phase 2: logging. Phase 3: nightly adapter + eval gate |
+| [docs/app9-builder.md](docs/app9-builder.md) | app9.nextaura.us as the agent-ready building GUI: JSON API, MCP-style tools, per-session tokens |
 
-## Repo layout
-
-```
-README.md              this plan (rendered as the site)
-docs/app9-builder.md   app9 builder GUI + agent API plan
-site/                  built static site (generated)
-scripts/build.mjs      renders the markdown into site/
-wrangler.toml          static-assets Worker for app19.nextaura.us
-```
-
-## Deploy (site only)
+## Deploy this site
 
 ```
 npm ci
-npm run build
 npm run deploy
 ```
 
-`npm run deploy` runs `wrangler deploy` (Node 22) with your existing Cloudflare login. Any API-token environment variables are unset first so the login is used.
+This builds the markdown into `site/` and runs `wrangler deploy` on Node 22. Any API-token environment variables are unset first, so the existing Cloudflare login is used. The Worker serves static files only.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

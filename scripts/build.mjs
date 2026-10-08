@@ -31,12 +31,12 @@ function page(title, bodyHtml) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
-<meta name="description" content="app19 plan: a local character model on a spare GPU card, scored nightly against Blender reference renders.">
+<meta name="description" content="app19 plan: a small app18-only LLM that lives entirely in one spare 4 GB FirePro W7000, never spills into system RAM, and improves nightly from app18 job logs with Blender as the reference.">
 <meta name="robots" content="index,follow">
 <style>${css}</style>
 </head>
 <body>
-<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/app9-builder">app9 Builder</a></nav></header>
+<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/vram-budget">VRAM</a><a href="/learning-loop">Learning</a><a href="/phases">Phases</a><a href="/app9-builder">app9</a></nav></header>
 <main>
 ${bodyHtml}
 </main>
@@ -48,7 +48,8 @@ ${bodyHtml}
 
 function render(md) {
   // Repo-relative links → site paths.
-  md = md.replace(/\(docs\/app9-builder\.md(#[^)]+)?\)/g, (_, h) => `(/app9-builder${h || ""})`);
+  md = md.replace(/\((?:docs\/)?(app9-builder|vram-budget|learning-loop|phases)\.md(#[^)]+)?\)/g, (_, n, h) => `(/${n}${h || ""})`);
+  md = md.replace(/\(LICENSE\)/g, "(/license.txt)");
   // Give headings stable ids for anchors.
   const renderer = new marked.Renderer();
   renderer.heading = function ({ tokens, depth }) {
@@ -60,8 +61,11 @@ function render(md) {
 }
 
 mkdirSync("site", { recursive: true });
-writeFileSync("site/index.html", page("app19 — Local Character Model on the Spare Card", render(readFileSync("README.md", "utf8"))));
-writeFileSync("site/app9-builder.html", page("app9 Builder GUI — app19 plan", render(readFileSync("docs/app9-builder.md", "utf8"))));
+writeFileSync("site/index.html", page("app19 — app18-only model on one spare 4 GB card", render(readFileSync("README.md", "utf8"))));
+for (const [n, t] of [["vram-budget", "VRAM budget and enforcement"], ["learning-loop", "Learning loop"], ["phases", "Phases"], ["app9-builder", "app9 building GUI"]]) {
+  writeFileSync(`site/${n}.html`, page(`${t} — app19 plan`, render(readFileSync(`docs/${n}.md`, "utf8"))));
+}
+writeFileSync("site/license.txt", readFileSync("LICENSE", "utf8"));
 writeFileSync("site/404.html", page("Not found — app19", "<h1>Not found</h1><p><a href=\"/\">Back to the plan</a></p>"));
 writeFileSync("site/robots.txt", "User-agent: *\nAllow: /\n");
 writeFileSync("site/_headers", `/*
@@ -71,4 +75,4 @@ writeFileSync("site/_headers", `/*
   Permissions-Policy: camera=(), microphone=(), geolocation=()
   Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
 `);
-console.log("built site/: index.html, app9-builder.html, 404.html");
+console.log("built site/");

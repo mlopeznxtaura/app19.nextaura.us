@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Learning loop — app19 plan</title>
+<meta name="description" content="app19 plan: a small app18-only LLM that lives entirely in one spare 4 GB FirePro W7000, never spills into system RAM, and improves nightly from app18 job logs with Blender as the reference.">
+<meta name="robots" content="index,follow">
+<style>
+:root{color-scheme:light dark;--bg:#0e1013;--fg:#e7e9ec;--mut:#9aa3ad;--acc:#7cc4ff;--line:#262b31;--code:#161a1f}
+@media (prefers-color-scheme:light){:root{--bg:#fbfbfa;--fg:#16191d;--mut:#5a636d;--acc:#0a5cad;--line:#e2e4e7;--code:#f1f2f4}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header,main,footer{max-width:860px;margin:0 auto;padding:0 20px}
+header{padding-top:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:14px}
+header a{color:var(--mut);text-decoration:none;font-size:14px;margin-left:14px}header a:hover{color:var(--acc)}
+.brand{font-weight:700;letter-spacing:.02em;color:var(--fg)!important;margin:0!important;font-size:15px!important}
+main{padding-top:8px;padding-bottom:40px}
+h1{font-size:2rem;line-height:1.2;margin:28px 0 12px}h2{font-size:1.35rem;margin:36px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;margin:24px 0 8px}a{color:var(--acc)}
+code{background:var(--code);padding:.1em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow:auto;border:1px solid var(--line)}pre code{background:none;padding:0;font-size:.85em;line-height:1.45}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:.92em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--code)}
+blockquote{margin:0;padding-left:14px;border-left:3px solid var(--line);color:var(--mut)}
+footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-top:14px;padding-bottom:40px}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/vram-budget">VRAM</a><a href="/learning-loop">Learning</a><a href="/phases">Phases</a><a href="/app9-builder">app9</a></nav></header>
+<main>
+<h1 id="learning-loop">Learning loop</h1>
+<p>The model gets better at app18 from app18&#39;s own job logs. Blender&#39;s output is the reference for what is correct.</p>
+<pre><code>request ─► model (spare W7000) ─► tool proxy ─► app18 API ─► Blender node ─► result
+                                     │                                         │
+                                     └──────── job record (scrubbed) ◄─────────┘
+                                                      │
+                                         Linux storage box (only copy)
+                                                      │
+                                    nightly: build dataset ─► train adapter ─► eval vs Blender
+                                                      │
+                                     gate passes? ─► hot-swap adapter on the card
+                                     gate fails?  ─► keep current, file the report
+</code></pre>
+<h2 id="1-logging-phase-2">1. Logging (Phase 2)</h2>
+<p>Every app18 job the model drives becomes one JSON line. The <strong>tool proxy</strong> writes the record, not the model, so the model cannot edit its own history.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>job_id</code>, <code>ts</code></td>
+<td>IDs and time</td>
+</tr>
+<tr>
+<td><code>request</code></td>
+<td>What was asked, in plain language</td>
+</tr>
+<tr>
+<td><code>prompt_version</code>, <code>adapter</code></td>
+<td>Which system prompt and which adapter hash produced the plan</td>
+</tr>
+<tr>
+<td><code>plan</code></td>
+<td>The model&#39;s output: the app18 calls and their arguments</td>
+</tr>
+<tr>
+<td><code>calls[]</code></td>
+<td>Each app18 request and response (status, body summary, timing)</td>
+</tr>
+<tr>
+<td><code>blender</code></td>
+<td>Blender&#39;s result: mesh/rig stats, render hashes, export file sizes, errors</td>
+</tr>
+<tr>
+<td><code>outcome</code></td>
+<td><code>pass</code> / <code>fail</code> from the validator. Optional <code>human</code> label from Marco.</td>
+</tr>
+<tr>
+<td><code>fix</code></td>
+<td>If the model retried, the corrected plan. These are the most valuable training pairs.</td>
+</tr>
+</tbody></table>
+<p><strong>Scrubbing happens before anything leaves the PC.</strong> Auth headers and session tokens are dropped, and so are IPs, hostnames, usernames and local file paths. Only the job content stays.</p>
+<p><strong>Storage happens only on the separate Linux storage box.</strong> Records are append-only, sent over an authenticated private link. Nothing is stored on Cloudflare, in this repo, or in any third-party service. The PC keeps a small spool only until the box confirms receipt.</p>
+<h2 id="2-why-not-real-time-learning">2. Why not real-time learning</h2>
+<p>Updating weights after every job is not feasible on this card. Even inference uses a quantized (Q4_K_M) model, and gradient steps on it cannot run on the card within the no-RAM rule (see section 3). What <em>can</em> change in real time without training is <strong>prompt memory</strong>: a small, curated set of recent verified <code>request → plan</code> examples that the server injects into the context. It lives in the KV cache on the card and counts against the 8,192-token context.</p>
+<p>Weight changes happen <strong>nightly</strong>, as a LoRA adapter.</p>
+<h2 id="3-can-training-run-on-the-4-gb-card-without-spilling-into-ram">3. Can training run on the 4 GB card without spilling into RAM?</h2>
+<p><strong>Verdict: no, not with upstream llama.cpp on this driver. Not for the 1.5B model, and not even for a 0.5B model.</strong></p>
+<p><strong>Two blockers, either one enough:</strong></p>
+<ol>
+<li><strong>Missing GPU ops in the only build that works here.</strong> b8393, the last build that gives clean output on this driver, has no Vulkan <code>OUT_PROD</code> or <code>CROSS_ENTROPY_LOSS</code> / <code>_BACK</code>. llama.cpp&#39;s trainer needs them, so they would run on the CPU, which means RAM. Vulkan <code>OUT_PROD</code> only landed on 2026-07-15 (llama.cpp #23997), and that is only in builds that corrupt output on this driver.</li>
+<li><strong>Memory, even on a fixed driver</strong> (for example Linux + Mesa RADV). Upstream <code>llama-finetune</code> is full-parameter only, needs FP32 weights, and never trains the token embedding.</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Weights f32</th>
+<th>Trainable (non-embedding)</th>
+<th>+ grads</th>
+<th>+ AdamW moments</th>
+<th>Activations (ctx 512)</th>
+<th>Total vs 3,200 MiB ceiling</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Qwen2.5-0.5B, SGD</td>
+<td>1,885 MiB</td>
+<td>~358M</td>
+<td>1,366 MiB</td>
+<td>—</td>
+<td>~600 MiB</td>
+<td><strong>~3,850 MiB: does not fit</strong></td>
+</tr>
+<tr>
+<td>Qwen2.5-0.5B, AdamW</td>
+<td>1,885 MiB</td>
+<td>~358M</td>
+<td>1,366 MiB</td>
+<td>2,731 MiB</td>
+<td>~600 MiB</td>
+<td><strong>~6,580 MiB: does not fit</strong></td>
+</tr>
+<tr>
+<td>Qwen2.5-Coder-1.5B, any</td>
+<td>5,880 MiB</td>
+<td>~1.31B</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td><strong>Weights alone do not fit</strong></td>
+</tr>
+</tbody></table>
+<p><strong>The concrete limit, with a working driver:</strong> full fine-tune of about <strong>150M parameters with AdamW</strong> (16 B per trained parameter) or about <strong>300M with SGD</strong> (8 B per parameter), at context 512. That is small-model territory (for example a 135M model). It is not the 1.5B model that serves app18.</p>
+<p><strong>LoRA on the card:</strong> upstream removed its LoRA trainer in November 2025. The <a href="https://huggingface.co/blog/qvac/fabric-llm-finetune">qvac-fabric</a> fork does LoRA on a quantized base on Vulkan. On paper it fits: 1.06 GiB base + ~35 MiB rank-8 attention adapter with gradients and Adam state + ~0.6–0.9 GiB activations ≈ 2 GiB. <strong>But</strong> it tracks upstream, so it carries the synchronization change that corrupts output on this driver, and it is verified on Qwen3/Gemma3 only. <strong>Status: unproven, likely blocked.</strong> Phase 3 gives it one 2-hour spike; it is not the plan of record.</p>
+<h3 id="alternatives-labelled">Alternatives, labelled</h3>
+<table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Violates the no-RAM rule?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Train the LoRA off the PC, on the Linux storage box (CPU, PEFT on the full-precision weights), ship only the adapter file</strong></td>
+<td><strong>No.</strong> The served model never leaves the card. Training RAM is on a different machine.</td>
+<td><strong>Plan of record.</strong> The adapter is converted to GGUF and loaded on the card next to the base. ~37–74 MiB is budgeted.</td>
+</tr>
+<tr>
+<td>Prompt memory: retrieve verified examples, no training</td>
+<td><strong>No</strong></td>
+<td>Ships in Phase 2. Works even if training never does.</td>
+</tr>
+<tr>
+<td>qvac-fabric LoRA on the spare W7000, at night</td>
+<td>No, if it works</td>
+<td>Expected to hit the driver bug. Time-boxed spike only.</td>
+</tr>
+<tr>
+<td>Linux + RADV on this PC, then on-card training of a ≤150M model</td>
+<td>No</td>
+<td>Too small to replace the 1.5B for driving app18. Useful only as a router or classifier.</td>
+</tr>
+<tr>
+<td>Train at night on GPU B (Blender&#39;s card)</td>
+<td>No (VRAM only), but it <strong>breaks &quot;GPU B is Blender&#39;s&quot;</strong></td>
+<td>Same 4 GB limit and same driver bug, so it gains nothing</td>
+</tr>
+<tr>
+<td>Train on the Windows PC&#39;s CPU and RAM (64 GB)</td>
+<td><strong>Yes, violates</strong></td>
+<td>Puts model state in this PC&#39;s RAM</td>
+</tr>
+<tr>
+<td>Partial offload or CPU fallback during training</td>
+<td><strong>Yes, violates</strong></td>
+<td>The same thing, hidden</td>
+</tr>
+</tbody></table>
+<h2 id="4-nightly-adapter-phase-3">4. Nightly adapter (Phase 3)</h2>
+<ol>
+<li><strong>02:00 PT:</strong> the storage box builds the dataset. It takes records since the last run where <code>outcome = pass</code> or a human-approved <code>fix</code>, de-duplicates them, and holds out anything that matches the eval set.</li>
+<li><strong>Train</strong> a LoRA (rank 16, all linear layers) on the storage box&#39;s CPU, starting from the current promoted adapter. Step count and wall-clock time are capped.</li>
+<li><strong>Convert</strong> to a GGUF LoRA and hash it.</li>
+<li><strong>Eval</strong> (below). If the gate passes, <strong>promote</strong> by moving the <code>current</code> pointer.</li>
+</ol>
+<h2 id="5-eval-gate-blender-is-the-reference">5. Eval gate (Blender is the reference)</h2>
+<ul>
+<li><strong>Held-out set:</strong> ~150 app18 tasks, frozen, split across job types: build a character, edit one, rig, turntable render, GLB export. Each task has a <strong>gold job</strong> that has already been run through Blender. Those outputs (mesh and rig stats, renders, export sizes) are the reference.</li>
+<li><strong>Run:</strong> the candidate and the current adapter each drive app18 on every task, using an eval-only session token. Blender actually executes the jobs, at night, on GPU B and the CPU.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Task success (job completes and the validator passes)</td>
+<td>40%</td>
+</tr>
+<tr>
+<td>Match to the reference: mesh/rig stats within tolerance, silhouette IoU, palette ΔE, SSIM of renders</td>
+<td>35%</td>
+</tr>
+<tr>
+<td>Plan correctness vs the gold job (endpoint and arguments exact-match rate)</td>
+<td>15%</td>
+</tr>
+<tr>
+<td>Efficiency (retries, calls per task)</td>
+<td>10%</td>
+</tr>
+<tr>
+<td>Forbidden or out-of-allowlist calls</td>
+<td><strong>Gate: must be 0</strong></td>
+</tr>
+<tr>
+<td>Coherence check on the card</td>
+<td><strong>Gate: must pass</strong></td>
+</tr>
+</tbody></table>
+<p><strong>Promote only if:</strong> the candidate&#39;s score is at least the current score + 1.0 point, no metric regresses by more than 2 points, and both gate checks pass. Otherwise the current adapter stays and the report is filed.</p>
+<h2 id="6-rollback-instantly">6. Rollback, instantly</h2>
+<ul>
+<li><code>llama-server</code> starts with <strong>both</strong> the current and the previous adapter loaded (<code>--lora-init-without-apply</code>). They cost ≤ 150 MiB on the card in total.</li>
+<li><strong>Promote or roll back</strong> = one local <code>POST /lora-adapters</code> call that sets the scales (new 1, old 0, or the reverse). No restart and no reload, so it takes well under a second.</li>
+<li>The last 10 promoted adapters stay on the storage box. Rolling back further loads the older adapter at the next restart after preflight.</li>
+<li>Every pointer move is logged with who did it (Marco or an agent session), when, and why.</li>
+</ul>
+
+</main>
+<footer>NextAura · app19 plan · static page, no tracking, no backend.</footer>
+</body>
+</html>
