@@ -1,0 +1,13 @@
+{
+  "name": "app19-nextaura-us",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "deploy": "npm run build && env -u CF_API_TOKEN -u CLOUDFLARE_API_TOKEN wrangler deploy"
+  },
+  "devDependencies": {
+    "marked": "^14.1.0",
+    "wrangler": "^4.40.0"
+  }
+}

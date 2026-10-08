@@ -1,0 +1,14 @@
+# app19.nextaura.us — static plan page. Assets only: no Worker script, no bindings, no other services.
+name = "nextaura-app19-us"
+compatibility_date = "2026-10-01"
+workers_dev = false
+preview_urls = false
+
+routes = [
+  { pattern = "app19.nextaura.us", custom_domain = true },
+]
+
+[assets]
+directory = "./site"
+html_handling = "auto-trailing-slash"
+not_found_handling = "404-page"

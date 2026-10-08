@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>app19 — Local Character Model on the Spare Card</title>
+<meta name="description" content="app19 plan: a local character model on a spare GPU card, scored nightly against Blender reference renders.">
+<meta name="robots" content="index,follow">
+<style>
+:root{color-scheme:light dark;--bg:#0e1013;--fg:#e7e9ec;--mut:#9aa3ad;--acc:#7cc4ff;--line:#262b31;--code:#161a1f}
+@media (prefers-color-scheme:light){:root{--bg:#fbfbfa;--fg:#16191d;--mut:#5a636d;--acc:#0a5cad;--line:#e2e4e7;--code:#f1f2f4}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header,main,footer{max-width:860px;margin:0 auto;padding:0 20px}
+header{padding-top:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:14px}
+header a{color:var(--mut);text-decoration:none;font-size:14px;margin-left:14px}header a:hover{color:var(--acc)}
+.brand{font-weight:700;letter-spacing:.02em;color:var(--fg)!important;margin:0!important;font-size:15px!important}
+main{padding-top:8px;padding-bottom:40px}
+h1{font-size:2rem;line-height:1.2;margin:28px 0 12px}h2{font-size:1.35rem;margin:36px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;margin:24px 0 8px}a{color:var(--acc)}
+code{background:var(--code);padding:.1em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow:auto;border:1px solid var(--line)}pre code{background:none;padding:0;font-size:.85em;line-height:1.45}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:.92em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--code)}
+blockquote{margin:0;padding-left:14px;border-left:3px solid var(--line);color:var(--mut)}
+footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-top:14px;padding-bottom:40px}
+</style>
+</head>
+<body>
+<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/app9-builder">app9 Builder</a></nav></header>
+<main>
+<h1 id="app19-local-character-model-on-the-spare-card">app19 — Local Character Model on the Spare Card</h1>
+<p><strong>Status:</strong> plan. Nothing in this repo trains or serves a model yet. The only thing live is this page at <a href="https://app19.nextaura.us">https://app19.nextaura.us</a>.</p>
+<h2 id="what">What</h2>
+<p>Run a small open model with a LoRA adapter on the <strong>spare GPU card</strong>. You give it a plain-language character brief (&quot;heavy-set cop, mustache, aviators, navy slacks&quot;). It returns <strong>validated <code>lowpoly_character</code> params</strong>, the same JSON the Blender low-poly builder already accepts. Blender renders those params. That render is the <strong>reference</strong>. The model gets no other source of truth.</p>
+<p>The nightly loop:</p>
+<ol>
+<li>Train or refresh the adapter on the spare card.</li>
+<li>Run the fixed eval set. Brief → params → Blender render.</li>
+<li>Score each render against the Blender reference render for that brief.</li>
+<li>Promote the adapter only if it beats the current one. If it doesn&#39;t, keep the current one. Rolling back is one action.</li>
+</ol>
+<p>The builder GUI for all of this is <strong>app9.nextaura.us</strong>. See <a href="/app9-builder">docs/app9-builder.md</a>.</p>
+<h2 id="why">Why</h2>
+<ul>
+<li>The params schema is closed: enums, ranges, and <code>#RRGGBB</code> colours, and unknown keys are rejected. That makes &quot;did the model get it right&quot; a measurable question, not a vibe.</li>
+<li>Blender already produces a good character from good params (front, 3/4, and side views, plus a rigged GLB). The model only has to learn <strong>brief → params</strong>. It never has to learn geometry.</li>
+<li>The spare card is otherwise idle. The main card and the main workloads are never touched.</li>
+</ul>
+<h2 id="architecture">Architecture</h2>
+<pre><code>brief (text)
+   │
+   ▼
+[spare card] base model + LoRA adapter ──► params JSON
+   │                                          │
+   │                              schema validator (reject = score 0)
+   │                                          │
+   │                                          ▼
+   │                               Blender builder (headless)
+   │                                          │
+   │                         render views + GLB + stats.json
+   │                                          │
+   ▼                                          ▼
+eval harness ◄──────── Blender reference renders (gold params)
+   │
+   ▼
+scorecard ──► promote / hold / roll back   (driven from app9)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Part</th>
+<th>Runs where</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Base model + adapter</td>
+<td>Spare GPU only</td>
+<td>Pinned to that one device. Never falls back to the main card.</td>
+</tr>
+<tr>
+<td>Schema validator</td>
+<td>CPU</td>
+<td>The same rules as the Blender builder. Unknown keys are rejected.</td>
+</tr>
+<tr>
+<td>Blender builder</td>
+<td>CPU (Cycles CPU) or the existing private Blender node</td>
+<td>Reached only through the authenticated gate. Never exposed directly.</td>
+</tr>
+<tr>
+<td>Eval harness</td>
+<td>CPU</td>
+<td>Deterministic seeds and a fixed camera, light, and resolution.</td>
+</tr>
+<tr>
+<td>Control plane</td>
+<td>app9.nextaura.us</td>
+<td>Status, start/stop, logs, evals, and rollback. Session-token auth.</td>
+</tr>
+</tbody></table>
+<h2 id="vram-budget">VRAM budget</h2>
+<p>The spare card has a <strong>hard budget</strong>. The runner refuses to start when the estimate is over budget, and it stops the job when the measured peak crosses the stop line.</p>
+<pre><code>estimate = weights + adapter + optimizer_state + activations(seq_len, batch) + kv_cache + runtime_overhead
+headroom = card_total − estimate          (must stay ≥ 15% of card_total)
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Base size</th>
+<th>Precision</th>
+<th>Approx. weights</th>
+<th>Training extra (LoRA r=16, seq 1024, batch 4, grad ckpt)</th>
+<th>Fits a ~12 GB spare card?</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Serve</td>
+<td>0.5B</td>
+<td>bf16</td>
+<td>~1.0 GB</td>
+<td>—</td>
+<td>Yes, with lots of room</td>
+</tr>
+<tr>
+<td>Serve</td>
+<td>1.5B</td>
+<td>bf16</td>
+<td>~3.1 GB</td>
+<td>—</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Serve</td>
+<td>3B</td>
+<td>4-bit</td>
+<td>~2.0 GB</td>
+<td>—</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td>Train (QLoRA)</td>
+<td>1.5B</td>
+<td>4-bit base, bf16 adapter</td>
+<td>~1.0 GB</td>
+<td>~3–5 GB</td>
+<td>Yes, the default</td>
+</tr>
+<tr>
+<td>Train (LoRA)</td>
+<td>3B</td>
+<td>bf16</td>
+<td>~6.2 GB</td>
+<td>~5–7 GB</td>
+<td>Tight. Only if headroom stays ≥ 15%</td>
+</tr>
+</tbody></table>
+<p>Rules:</p>
+<ul>
+<li><strong>Default:</strong> 1.5B base, QLoRA training, bf16 serving. Start at 0.5B to prove the loop, then move up.</li>
+<li><strong>Serve and train never overlap.</strong> The scheduler stops serving before a training run and restarts it after.</li>
+<li><strong>Thresholds:</strong> green below 70% of card total, amber 70–85%, red above 85%. At red, the runner stops the job cleanly and writes a checkpoint.</li>
+<li>The budget numbers (card total, thresholds, max seq/batch) live in a config file, not in code. app9 shows estimated vs measured usage live.</li>
+</ul>
+<h2 id="data">Data</h2>
+<ul>
+<li><strong>Seed set:</strong> a handful of hand-checked character specs (for example a Belizean man, a Trinidadian woman, a police officer, and a street character), each with a written brief.</li>
+<li><strong>Expansion:</strong> sample valid params from the schema (body, build, height, hair, top, bottom, shoes, colours, accessories ≤ 5). Write 3–5 briefs per spec in different voices: terse, descriptive, slang. Keep the briefs a human would actually type.</li>
+<li><strong>Gold renders:</strong> Blender renders every gold spec once: front, 3/4, and side views at a fixed resolution and sample count. The image hashes are stored with the spec.</li>
+<li><strong>Split:</strong> train / val / <strong>frozen eval</strong> (about 200 briefs). The frozen eval set never changes between nights, so the scores stay comparable.</li>
+<li>No scraped faces and no real people. Every character is synthetic.</li>
+</ul>
+<h2 id="training">Training</h2>
+<ul>
+<li>QLoRA on the spare card. The target is <strong>params JSON only</strong>, with no prose.</li>
+<li>Constrained decoding against the schema&#39;s JSON grammar at inference time, so invalid enums or keys can&#39;t be emitted.</li>
+<li>Nightly: train on whatever new data arrived since the last run, starting from the last <em>promoted</em> adapter, with a capped step count and a capped wall clock.</li>
+<li>Every adapter is saved as an immutable, content-hashed artifact with its config, data manifest, and scorecard.</li>
+</ul>
+<h2 id="nightly-eval-vs-the-blender-reference">Nightly eval vs the Blender reference</h2>
+<p>For each frozen-eval brief:</p>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>What it checks</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Schema-valid rate</td>
+<td>Params pass the validator</td>
+<td>Gate. Must be ≥ 99%</td>
+</tr>
+<tr>
+<td>Field accuracy</td>
+<td>Exact match on enums, ±0.03 m on height, ΔE ≤ 10 on colours vs gold params</td>
+<td>40%</td>
+</tr>
+<tr>
+<td>Silhouette IoU</td>
+<td>Mask IoU of front, 3/4, and side renders vs the reference renders</td>
+<td>25%</td>
+</tr>
+<tr>
+<td>Palette distance</td>
+<td>Mean ΔE of the dominant colours per body region vs the reference</td>
+<td>20%</td>
+</tr>
+<tr>
+<td>Perceptual similarity</td>
+<td>SSIM on the fixed-camera renders vs the reference</td>
+<td>15%</td>
+</tr>
+</tbody></table>
+<p><strong>Promotion gate:</strong> the candidate&#39;s weighted score must be at least the current adapter&#39;s score + 0.5 points, with no metric regressing by more than 2 points, and a schema-valid rate of ≥ 99%. If any check fails, the current adapter stays and the candidate is kept for comparison.</p>
+<p><strong>Compare view:</strong> side-by-side reference and candidate renders per brief, sorted by worst delta first. This lives in app9.</p>
+<h2 id="rollback">Rollback</h2>
+<ul>
+<li><code>current</code> is a pointer to one adapter hash. Promotion and rollback both just move the pointer.</li>
+<li>The last 10 promoted adapters are kept. Rollback swaps the pointer and restarts serving on the spare card. The target is under 1 minute.</li>
+<li>Every pointer move is logged with who did it (Marco or an agent session), when, and why.</li>
+</ul>
+<h2 id="security">Security</h2>
+<ul>
+<li><strong>No secrets in this repo or on the site.</strong> No tokens, keys, internal addresses, hostnames, usernames, or file paths.</li>
+<li>Control actions go through app9 with <strong>short-lived per-session tokens</strong> minted by Grok Bot for each session. Nothing is hardcoded and nothing is long-lived. See <a href="/app9-builder#auth">docs/app9-builder.md</a>.</li>
+<li>The GPU box and the Blender node are <strong>never</strong> exposed publicly. They&#39;re reached only through the authenticated gate.</li>
+<li>This site is a static Cloudflare Worker with assets only: no backend, no storage, and no other Cloudflare services.</li>
+</ul>
+<h2 id="milestones">Milestones</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Milestone</th>
+<th>Done when</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>M0</td>
+<td>Plan public</td>
+<td>This page is live at app19.nextaura.us</td>
+</tr>
+<tr>
+<td>M1</td>
+<td>Eval harness</td>
+<td>Gold renders exist for the seed set, and the scorer runs on CPU against hand-written params</td>
+</tr>
+<tr>
+<td>M2</td>
+<td>Baseline</td>
+<td>0.5B base model with constrained decoding and no adapter is scored on the frozen eval</td>
+</tr>
+<tr>
+<td>M3</td>
+<td>First adapter</td>
+<td>A QLoRA adapter on the spare card beats the baseline through the promotion gate</td>
+</tr>
+<tr>
+<td>M4</td>
+<td>app9 builder</td>
+<td>Status, start/stop, logs, evals, compare, and rollback all work from app9 for Marco and for agents</td>
+</tr>
+<tr>
+<td>M5</td>
+<td>Nightly</td>
+<td>Unattended nightly train → eval → promote/hold, with a morning scorecard</td>
+</tr>
+</tbody></table>
+<h2 id="repo-layout">Repo layout</h2>
+<pre><code>README.md              this plan (rendered as the site)
+docs/app9-builder.md   app9 builder GUI + agent API plan
+site/                  built static site (generated)
+scripts/build.mjs      renders the markdown into site/
+wrangler.toml          static-assets Worker for app19.nextaura.us
+</code></pre>
+<h2 id="deploy-site-only">Deploy (site only)</h2>
+<pre><code>npm ci
+npm run build
+npm run deploy
+</code></pre>
+<p><code>npm run deploy</code> runs <code>wrangler deploy</code> (Node 22) with your existing Cloudflare login. Any API-token environment variables are unset first so the login is used.</p>
+
+</main>
+<footer>NextAura · app19 plan · static page, no tracking, no backend.</footer>
+</body>
+</html>

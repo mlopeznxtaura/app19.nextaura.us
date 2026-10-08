@@ -1,0 +1,74 @@
+// Renders README.md and docs/app9-builder.md into a static site in site/.
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { marked } from "marked";
+
+marked.use({ gfm: true });
+
+const css = `
+:root{color-scheme:light dark;--bg:#0e1013;--fg:#e7e9ec;--mut:#9aa3ad;--acc:#7cc4ff;--line:#262b31;--code:#161a1f}
+@media (prefers-color-scheme:light){:root{--bg:#fbfbfa;--fg:#16191d;--mut:#5a636d;--acc:#0a5cad;--line:#e2e4e7;--code:#f1f2f4}}
+*{box-sizing:border-box}html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header,main,footer{max-width:860px;margin:0 auto;padding:0 20px}
+header{padding-top:28px;display:flex;gap:16px;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:14px}
+header a{color:var(--mut);text-decoration:none;font-size:14px;margin-left:14px}header a:hover{color:var(--acc)}
+.brand{font-weight:700;letter-spacing:.02em;color:var(--fg)!important;margin:0!important;font-size:15px!important}
+main{padding-top:8px;padding-bottom:40px}
+h1{font-size:2rem;line-height:1.2;margin:28px 0 12px}h2{font-size:1.35rem;margin:36px 0 10px;padding-top:8px;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;margin:24px 0 8px}a{color:var(--acc)}
+code{background:var(--code);padding:.1em .35em;border-radius:4px;font:0.88em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{background:var(--code);padding:14px 16px;border-radius:8px;overflow:auto;border:1px solid var(--line)}pre code{background:none;padding:0;font-size:.85em;line-height:1.45}
+table{border-collapse:collapse;width:100%;margin:12px 0;font-size:.92em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}th{background:var(--code)}
+blockquote{margin:0;padding-left:14px;border-left:3px solid var(--line);color:var(--mut)}
+footer{border-top:1px solid var(--line);color:var(--mut);font-size:13px;padding-top:14px;padding-bottom:40px}
+`;
+
+function page(title, bodyHtml) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<meta name="description" content="app19 plan: a local character model on a spare GPU card, scored nightly against Blender reference renders.">
+<meta name="robots" content="index,follow">
+<style>${css}</style>
+</head>
+<body>
+<header><a class="brand" href="/">app19 · NextAura</a><nav><a href="/">Plan</a><a href="/app9-builder">app9 Builder</a></nav></header>
+<main>
+${bodyHtml}
+</main>
+<footer>NextAura · app19 plan · static page, no tracking, no backend.</footer>
+</body>
+</html>
+`;
+}
+
+function render(md) {
+  // Repo-relative links → site paths.
+  md = md.replace(/\(docs\/app9-builder\.md(#[^)]+)?\)/g, (_, h) => `(/app9-builder${h || ""})`);
+  // Give headings stable ids for anchors.
+  const renderer = new marked.Renderer();
+  renderer.heading = function ({ tokens, depth }) {
+    const text = this.parser.parseInline(tokens);
+    const id = text.replace(/<[^>]+>/g, "").toLowerCase().replace(/&[a-z]+;/g, "").replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-");
+    return `<h${depth} id="${id}">${text}</h${depth}>\n`;
+  };
+  return marked.parse(md, { renderer });
+}
+
+mkdirSync("site", { recursive: true });
+writeFileSync("site/index.html", page("app19 — Local Character Model on the Spare Card", render(readFileSync("README.md", "utf8"))));
+writeFileSync("site/app9-builder.html", page("app9 Builder GUI — app19 plan", render(readFileSync("docs/app9-builder.md", "utf8"))));
+writeFileSync("site/404.html", page("Not found — app19", "<h1>Not found</h1><p><a href=\"/\">Back to the plan</a></p>"));
+writeFileSync("site/robots.txt", "User-agent: *\nAllow: /\n");
+writeFileSync("site/_headers", `/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+`);
+console.log("built site/: index.html, app9-builder.html, 404.html");
